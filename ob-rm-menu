@@ -1,0 +1,624 @@
+#! /bin/bash
+
+#--------------------------------------------------------------------------------------------------------------
+# Global variables:
+#--------------------------------------------------------------------------------------------------------------
+#
+#--Start of customizable variables-----------------------------------------------------------------------------
+#
+
+# %d - device file name
+# %p - mount point path
+# %t - filesystem type
+# %o - mount options
+DEFAULT_MOUNT_OPTIONS="noexec,nosuid,nodev,noatime"
+COMMAND_MOUNT="udevil mount -t %t -o %o %d %p"
+COMMAND_UMOUNT="udevil umount %p"
+#COMMAND_EJECT="eject -T %d"
+COMMAND_EJECT="eject %d"
+COMMAND_SYNC="sync"
+
+# Colon separated list of preferred mount locations (e.g. /media). This value normally is guessed.
+# But if the script gives weird result the value can be explicitly specified here:
+PREFERRED_MOUNT_PATHS=
+
+#
+#--End of customizable variables-------------------------------------------------------------------------------
+
+# Below can be replaced with KiB, MiB, etc. with koeficient of 1024.
+declare -a UNITS=( KB MB GB TB PB EB ZB YB )
+KOEF=1000
+
+# Device properties
+REMOVABLE=
+EXTERNAL=
+EJECTABLE=
+VENDOR=
+MODEL=
+SIZE=
+BUS=
+TYPE=
+NAME=
+PART_TABLE_TYPE=
+MEDIA=
+MEDIA_STATE=
+FS_USAGE=
+FS_TYPE=
+FS_VERSION=
+FS_LABEL=
+FS_UUID=
+
+# Mounts table info
+declare -a MOUNTS
+MOUNTS_INDEX=0
+
+# Filesystems table info
+declare -a FSTABLE
+FSTABLE_INDEX=0
+
+# Global variables to form menu items
+LABEL=
+ICON=
+ACTION=
+
+# Global variables for action icons
+ICON_SYNC=
+ICON_EJECT=
+ICON_MOUNT=
+ICON_UMOUNT=
+
+#--------------------------------------------------------------------------------------------------------------
+#
+# Below commands work with root access only:
+#
+# Rescan the device:
+# 		echo 1 >/sys/block/<dev>/device/rescan
+# Example - rescan all scsi devices:
+#		cd /sys/bus/scsi/devices
+#		echo > 0\:0\:0\:0/rescan
+#
+# Remove the device:
+# 		echo 1 >/sys/block/<dev>/device/delete
+#
+
+
+#--------------------------------------------------------------------------------------------------------------
+#	Functions code starts here
+#--------------------------------------------------------------------------------------------------------------
+
+# =========================================================================================================
+# main function receives no mandatory arguments.
+# It outputs the pipe menu.
+# =========================================================================================================
+main()
+{
+	local separator_flag=
+	local menu_item_flag
+	local eject
+	local i
+	local j
+	local mj
+
+#ICON="/usr/share/icons/gnome/24x24/devices/media-removable.png"
+
+	echo "<openbox_pipe_menu>"
+
+	for i in /sys/block/*/device
+	do
+		i=${i%/device}
+		i=${i#/sys/block/}
+		read REMOVABLE < /sys/block/$i/removable
+		get_device_info $i
+
+		if [ -z "$BUS" ] && [ -r "/sys/block/$i/device/cid" ] && [ -r "/sys/block/$i/device/csd" ]
+		then
+			BUS=sdio
+			TYPE=flash
+			MODEL=$NAME
+			if [ -r "/sys/block/$i/device/scr" ]
+			then
+				VENDOR="SD Card"
+			else
+				VENDOR="MMC Card"
+			fi
+		fi
+
+		EXTERNAL=0
+		# External device is any one on usb, esata, ieee1394 (firewire) or sdio bus.
+		# Did not test this except usb bus...
+		# ata_serial_esata must be incorrect value, seems ata is used instead.
+		([ "$BUS" == "usb" ] || [ "$BUS" == "ata_serial_esata" ] || [ "$BUS" == "ieee1394" ] ||\
+			[ "$BUS" == "sdio" ]) && EXTERNAL=1
+
+		if [ "$REMOVABLE" != "0" ] || [ "$EXTERNAL" != "0" ]
+		then
+			IFS=$'\n' read eject < /sys/block/$i/events
+			EJECTABLE=
+			[[ $eject =~ eject ]] && EJECTABLE=1
+
+			read VENDOR < /sys/block/$i/device/vendor
+			read MODEL < /sys/block/$i/device/model
+			VENDOR=${VENDOR%%+([[:space:]])}
+			MODEL=${MODEL%%+([[:space:]])}
+
+			[ -z "$separator_flag" ] && separator_flag=1
+
+			get_size /sys/block/$i
+
+			LABEL="$VENDOR $MODEL"
+			[ "$TYPE" == "disk" ] && [[ ! $LABEL =~ $SIZE ]] && LABEL="$LABEL $SIZE"
+			echo "<separator label=\"$LABEL\"/>"
+
+			get_device_icon
+
+			menu_item_flag=
+			if [ -n "$FS_USAGE" ]
+			then
+				fs_menu_item $i && menu_item_flag=1
+			elif [ -n "$PART_TABLE_TYPE" ]
+			then
+				for j in /sys/block/$i/*/partition
+				do
+					mj=${j%/partition}
+					get_size $mj
+					mj=${mj##*/}
+					get_device_info $mj
+					fs_menu_item $mj && menu_item_flag=1
+				done
+			elif [ -z "$MEDIA" ]
+			then
+				LABEL="$i No media"
+				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
+				echo "	<action name=\"Execute\"><command>true</command></action>"
+				echo "</item>"
+				menu_item_flag=1
+			else
+				LABEL="$i Media is $MEDIA_STATE"
+				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
+				echo "	<action name=\"Execute\"><command>true</command></action>"
+				echo "</item>"
+				menu_item_flag=1
+			fi
+			if [ -z "$menu_item_flag" ]
+			then
+				LABEL="$i No supported filesystems"
+				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
+				echo "	<action name=\"Execute\"><command>true</command></action>"
+				echo "</item>"
+			fi
+			if [ -n "$EJECTABLE" ] && check_command ${COMMAND_EJECT}
+			then
+				LABEL="Eject"
+				form_command $COMMAND_EJECT "/dev/$i"	# Only device name is passed
+				echo "<item label=\"$LABEL\" icon=\"$ICON_EJECT\" >"
+				echo "	<action name=\"Execute\"><command>$ACTION</command></action>"
+				echo "</item>"
+			fi
+		fi
+	done
+
+	if check_command ${COMMAND_SYNC}
+	then
+		[ -n "$separator_flag" ] && echo "<separator />"
+		LABEL="Sync all drives"
+		form_command $COMMAND_SYNC	# No options passed
+		echo "<item label=\"$LABEL\" icon=\"$ICON_SYNC\" >"
+		echo "	<action name=\"Execute\"><command>$ACTION</command></action>"
+		echo "</item>"
+	fi
+
+	echo "</openbox_pipe_menu>"
+
+}
+
+# =========================================================================================================
+# get_size function receives one mandatory argument - path to the device directory in sysfs.
+# It formats the device capacity and outputs it to SIZE global variable.
+# =========================================================================================================
+get_size()
+{
+	local size
+	local nsize
+	local reminder
+	local gsi
+
+	read size < $1/size
+	[[ ! "$size" =~ [[:digit:]] ]] && size=0
+	size=$(( $size * 512 ))
+	for(( gsi=0; gsi<${#UNITS[*]}; gsi++ ))
+	do
+		nsize=$(( $size / $KOEF ))
+		if [ $nsize -lt 10 ]
+		then
+			reminder=$(( $size % $KOEF ))
+			size=$nsize
+			[ $reminder -ge 100 ] && size="$size.${reminder:0:1}"
+			break
+		fi
+		size=$nsize
+		[ $size -lt $KOEF ] && break
+	done
+	[ $gsi -ge ${#UNITS[*]} ] && gsi=$((${#UNITS[*]}-1))
+	SIZE="$size${UNITS[$gsi]}"
+}
+
+# =========================================================================================================
+# get_device_info receives one mandatory argument - device file name.
+# It fills global variables with values from udev database.
+# =========================================================================================================
+get_device_info()
+{
+	local gdkey
+	local gdvalue
+
+	BUS=
+	TYPE=
+	NAME=
+	PART_TABLE_TYPE=
+	MEDIA=
+	MEDIA_STATE=
+	FS_USAGE=
+	FS_TYPE=
+	FS_VERSION=
+	FS_LABEL=
+	FS_UUID=
+
+	while IFS=$'=' read -r gdkey gdvalue
+	do
+		case $gdkey in
+			ID_BUS)			# is missing for memory cards
+				BUS=$gdvalue
+				;;
+			ID_TYPE)		# cd | floppy | tape | disk | generic | is missing for memory cards
+				TYPE=$gdvalue
+#echo $TYPE >&2
+				;;
+			ID_NAME)		# for memory cards
+				NAME=$gdvalue
+				;;
+			ID_PART_TABLE_TYPE)
+				PART_TABLE_TYPE=$gdvalue
+				;;
+			ID_*_MEDIA)
+				MEDIA=$gdvalue
+				;;
+			ID_*_MEDIA_STATE)
+				MEDIA_STATE=$gdvalue
+				;;
+			ID_FS_USAGE)	# filesystem | raid | crypto | other
+				FS_USAGE=$gdvalue
+				;;
+			ID_FS_TYPE)
+				FS_TYPE=$gdvalue
+				;;
+			ID_FS_VERSION)
+				FS_VERSION=$gdvalue
+				;;
+			ID_FS_LABEL_ENC)
+				FS_LABEL=$(echo -en $gdvalue)
+				;;
+			ID_FS_UUID_ENC)
+				FS_UUID=$(echo -en $gdvalue)
+				;;
+		esac
+	done < <(udevadm info --query=property --name=$1)
+
+	[ -n "$PART_TABLE_TYPE" ] && MEDIA=1
+}
+
+# =========================================================================================================
+# fs_menu_item receives one mandatory argument - name of device holding the file system.
+# It outputs the menu item for the device if the file system is supported and returns success.
+# Otherwise it returns failure.
+# =========================================================================================================
+fs_menu_item()
+{
+	local already_mounted=
+	local mount_to=
+	local mount_in_use=
+	local mount_paths=
+	local mipath
+	local mii
+	local mij
+	local miflag=
+
+	if [ "$FS_USAGE" == "filesystem" ]
+	then
+		LABEL="$1 $SIZE $FS_LABEL"
+		echo "<menu id=\"$1\" label=\"$LABEL\" icon=\"$ICON\">"
+		echo "<separator label=\"$LABEL\"/>"
+
+		# Walk through the list of existing mount points and form unmount commands for each
+		for((mii=0; mii<MOUNTS_INDEX; mii+=2))
+		do
+			if [ "${MOUNTS[$mii]}" == "$1" ]
+			then
+				already_mounted+="${MOUNTS[((mii+1))]}:"
+				LABEL="unmount from ${MOUNTS[((mii+1))]}"
+				form_command $COMMAND_UMOUNT "/dev/$1" "${MOUNTS[((mii+1))]}" $FS_TYPE # mount options not passed
+				echo "	<item label=\"$LABEL\" icon=\"$ICON_UMOUNT\" >"
+				echo "		<action name=\"Execute\"><command>$ACTION</command></action>"
+				echo "	</item>"
+				miflag=1
+			fi
+		done
+#echo "Already mounted: $already_mounted" >&2
+
+		# Form list of mount points for the device set up by the administrator
+		for((mii=0; mii<FSTABLE_INDEX; mii+=2))
+		do
+			mipath=${FSTABLE[((mii+1))]}
+			case ${FSTABLE[$mii]} in
+				$1)			;&
+				$FS_UUID)	;&
+				$FS_LABEL)
+					if ! is_mount_point_in_use $mipath
+					then
+						[[ ! $mount_to =~ (^|:)$mipath(:|$) ]] && mount_to+="$mipath:"
+					else
+						[[ ! $mount_in_use =~ (^|:)$mipath(:|$) ]] && mount_in_use+="$mipath:"
+					fi
+					;;
+			esac
+		done
+
+		# Form list of mount pathes used on the target system
+		# Below two loops most probably will give predictable result of /media...
+		IFS=$':'
+		for mii in $mount_to $mount_in_use
+		do
+			mii=${mii%/*}
+			[ -z "$mii" ] && continue
+			[[ ! $mount_paths =~ (^|:)$mii(:|$) ]] && mount_paths+="$mii:"
+		done
+
+		for mii in $PREFERRED_MOUNT_PATHS
+		do
+			[ -z "$mii" ] && continue
+			[[ ! $mount_paths =~ (^|:)$mii(:|$) ]] && mount_paths+="$mii:"
+		done
+
+		[ -z "$mount_paths" ] && mount_paths="/media"	# Default by FHS
+
+		# Extend the list of mount points with directories named as the device or its label or UUID
+		for mii in $mount_paths
+		do
+			[ -z "$mii" ] && continue
+			if [ -n "$FS_LABEL" ]	# Subdirectory named as the label
+			then
+				mipath="$mii/$FS_LABEL"
+				! is_mount_point_in_use $mipath && [[ ! $mount_to =~ (^|:)$mipath(:|$) ]] &&\
+					mount_to+="$mipath:"
+			fi
+			if [ -n "$FS_UUID" ]	# Subdirectory named as the UUID
+			then
+				mipath="$mii/$FS_UUID"
+				! is_mount_point_in_use $mipath && [[ ! $mount_to =~ (^|:)$mipath(:|$) ]] &&\
+					mount_to+="$mipath:"
+			fi
+			if [ "$TYPE" == "cd" ]	# Subdirectory named as the device type or bus plus a digit
+			then
+				mipath="$mii/cdrom"
+			elif [ "$TYPE" == "floppy" ]
+			then
+				mipath="$mii/floppy"
+			else
+				mipath="$mii/$BUS"
+			fi
+			for(( mii=0; mii<10; mii++ ))	# Here we add the digit
+			do
+				[[ $already_mounted =~ (^|:)$mipath$mii(:|$) ]] && break	# The device is already mounted there
+				[[ $mount_to =~ (^|:)$mipath$mii(:|$) ]] && break			# The path is already in the list
+
+				is_mount_point_in_use "$mipath$mii" && continue				# The path is already in use
+
+				mount_to+="$mipath$mii:" && break							# Found!
+			done
+		done
+
+#echo "Mount to: $mount_to" >&2
+
+		# Generate list of mount commands for the device
+		for mii in $mount_to
+		do
+			[ -z "$mii" ] && continue
+
+			[ -n "$miflag" ] && miflag= && echo "<separator />"
+			LABEL="mount at $mii"
+			form_command $COMMAND_MOUNT "/dev/$1" "$mii" $FS_TYPE $DEFAULT_MOUNT_OPTIONS
+			echo "	<item label=\"$LABEL\" icon=\"$ICON_MOUNT\" >"
+			echo "		<action name=\"Execute\"><command>$ACTION</command></action>"
+			echo "	</item>"
+		done
+
+		echo "</menu>"
+
+		return 0
+	fi
+
+return 1
+}
+
+# =========================================================================================================
+# check_command receives one mandatory argument - command to be tested.
+# It tests whether the first word in the command (quoted or unquoted) can be executed (found by the type
+# builtin) and returns success. Otherwise it returns failure.
+# =========================================================================================================
+check_command()
+{
+	local cmd
+
+	type $1 2>/dev/null && return 0					# check for command file itself
+
+	type ${1%%[[:space:]]*} 2>/dev/null && return 0	# check for command file with arguments
+
+	cmd=${1#*([[:space:]])\"}
+	cmd=${cmd%%\"*}
+	type ${cmd} 2>/dev/null && return 0				# check for quoted command file
+
+	cmd=${1#*([[:space:]])\'}
+	cmd=${cmd%%\'*}
+	type ${cmd} 2>/dev/null && return 0				# check for strong-quoted command file
+
+	return 1
+}
+
+# =========================================================================================================
+# load_tables receives no mandatory arguments.
+# It loads /proc/mounts and /etc/fstab files into arrays and returns no value.
+# =========================================================================================================
+load_tables()
+{
+	local ltdev
+	local ltpath
+	local ltrest
+	local lti
+
+	while IFS=$' \t' read ltdev ltpath ltrest
+	do
+		if [ ${ltdev:0:5} == "/dev/" ]
+		then
+			MOUNTS[((MOUNTS_INDEX++))]=${ltdev:5}
+			MOUNTS[((MOUNTS_INDEX++))]=$ltpath
+		fi
+	done < "/proc/mounts"
+
+	while IFS=$' \t' read ltdev ltpath ltrest
+	do
+		case $ltdev in
+		/dev/*)
+			FSTABLE[((FSTABLE_INDEX++))]=${ltdev:5}
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en $ltpath)
+			;;
+		UUID=*)
+			FSTABLE[((FSTABLE_INDEX++))]=${ltdev:5}
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en $ltpath)
+			;;
+		LABEL=*)
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en ${ltdev:6})
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en $ltpath)
+			;;
+		PARTUUID=*)
+			FSTABLE[((FSTABLE_INDEX++))]=${ltdev:9}
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en $ltpath)
+			;;
+		PARTLABEL=*)
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en ${ltdev:10})
+			FSTABLE[((FSTABLE_INDEX++))]=$(echo -en $ltpath)
+			;;
+		esac
+	done < "/etc/fstab"
+
+	for(( lti=1; lti<FSTABLE_INDEX; lti+=2 ))
+	do
+		ltpath=${FSTABLE[$lti]}
+		case $ltpath in
+			/)	;;
+			/home*)	;;
+			/usr*)	;;
+			/var*)	;;
+			/tmp*)	;;
+			/boot*)	;;
+			/opt*)	;;
+			/srv*)	;;
+			none)	;;
+			*)
+				ltpath=${ltpath%/*}
+				[[ ! $PREFERRED_MOUNT_PATHS =~ (^|:)$ltpath(:|$) ]] && PREFERRED_MOUNT_PATHS+=":$ltpath"
+				;;
+		esac
+	done
+#echo $PREFERRED_MOUNT_PATHS >&2
+}
+
+# =========================================================================================================
+# is_mount_point_in_use receives one mandatory argument - path to mount point to be tested.
+# It tests whether the mount point is already in use and returns success if so. Otherwise it returns failure.
+# =========================================================================================================
+is_mount_point_in_use()
+{
+	local pui
+
+	for(( pui=1; pui<MOUNTS_INDEX; pui+=2 ))
+	do
+		[ "$1" == "${MOUNTS[$pui]}" ] && return 0
+	done
+
+	return 1
+}
+
+# =========================================================================================================
+# form_command receives five mandatory arguments:
+# $1 - command template
+# $2 - device file name
+# $3 - mount point path
+# $4 - filesystem type
+# $5 - mount options
+#
+# It forms the final command and assigns it to ACTION variable. It returns no specific value.
+# =========================================================================================================
+form_command()
+{
+	ACTION=${1//"%d"/"$2"}
+	ACTION=${ACTION//"%p"/"$3"}
+	ACTION=${ACTION//"%t"/"$4"}
+	ACTION=${ACTION//"%o"/"$5"}
+}
+
+# =========================================================================================================
+# get_device_icon receives no mandatory arguments.
+# It searches for available device icon based on its type and bus and returns no value.
+# =========================================================================================================
+get_device_icon()
+{
+	# This function does not fully comply with the Icon Naming Specification.
+	# It prefers more specific icons from parent icon themes over generic ones from the current icon theme.
+	ICON=
+	case $TYPE in
+		cd)
+			find_devices_icon "drive-optical" ||\
+			find_devices_icon "media-optical"
+			;;
+		floppy)
+			find_devices_icon "media-floppy"
+			;;
+		tape)
+			find_devices_icon "media-tape"
+			;;
+		flash)
+			find_devices_icon "media-flash"
+			;;
+		disk)
+			[ "$REMOVABLE" != "0" ] && find_devices_icon "media-removable" ||\
+			find_devices_icon "drive-harddisk-$BUS" ||\
+			find_devices_icon "drive-harddisk"
+			;;
+	esac
+	if [ -z "$ICON" ]
+	then
+		find_devices_icon "drive-removable-media-$BUS" ||\
+		find_devices_icon "drive-removable-media" ||\
+		find_devices_icon "media-removable"
+	fi
+}
+
+#--------------------------------------------------------------------------------------------------------------
+#	Main script code starts here
+#--------------------------------------------------------------------------------------------------------------
+
+shopt -qs nullglob
+
+. "${0%/*}/icon-functions"
+
+icon_functions_init false
+
+find_actions_icon "go-jump"		&& ICON_SYNC=$ICON
+find_actions_icon "media-eject"	&& ICON_EJECT=$ICON
+find_actions_icon "list-add"	&& ICON_MOUNT=$ICON
+find_actions_icon "list-remove"	&& ICON_UMOUNT=$ICON
+
+load_tables
+main
+
+exit 0
+#--------------------------------------------------------------------------------------------------------------
