@@ -1,38 +1,74 @@
 #! /bin/bash
 
+#
+# Openbox pipe menu removable medias manager version 0.1-alpha
+#
+# Copyright (C) 2015 Andriy Martynets <martynets@volia.ua>
+#--------------------------------------------------------------------------------------------------------------
+# This file is part of ob-rm-menu.
+#
+# Ob-rm-menu is free software: you can redistribute it and/or modify it under the terms of
+# the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or (at your option) any later version.
+#
+# Ob-rm-menu is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with ob-rm-menu.
+# If not, see http://www.gnu.org/licenses/.
+#--------------------------------------------------------------------------------------------------------------
+#
+#
+# This script depends on the following packages:
+#	kernel 2.6+ (sysfs mounted at /sys)
+#	udev	(udevadm tool)
+#	udevil	(customizable, can be replaced by any tool)
+#
+# By default it uses udevil to avoid *kits dependent packages.
+#
+
 #--------------------------------------------------------------------------------------------------------------
 # Global variables:
 #--------------------------------------------------------------------------------------------------------------
 #
 #--Start of customizable variables-----------------------------------------------------------------------------
 #
-
-# %d - device file name
-# %p - mount point path
-# %t - filesystem type
-# %o - mount options
-DEFAULT_MOUNT_OPTIONS="noexec,nosuid,nodev,noatime"
+# Commands used by the script.
+# Special fields mean the following:
+#	%d - device file name
+#	%p - mount point path (will be replaced with the quoted path)
+#	%t - filesystem type
+#	%o - mount options
+#
 COMMAND_MOUNT="udevil mount -t %t -o %o %d %p"
 COMMAND_UMOUNT="udevil umount %p"
 #COMMAND_EJECT="eject -T %d"
 COMMAND_EJECT="eject %d"
 COMMAND_SYNC="sync"
 
+# Default mount options
+DEFAULT_MOUNT_OPTIONS="noexec,nosuid,nodev,noatime"
+
 # Colon separated list of preferred mount locations (e.g. /media). This value normally is guessed.
 # But if the script gives weird result the value can be explicitly specified here:
 PREFERRED_MOUNT_PATHS=
 
+# Units to use in media size: kibibytes (true) or kilobytes (any other value).
+USE_KIBIBYTES=false
+
 #
 #--End of customizable variables-------------------------------------------------------------------------------
 
-# Below can be replaced with KiB, MiB, etc. with koeficient of 1024.
-declare -a UNITS=( KB MB GB TB PB EB ZB YB )
-KOEF=1000
+# Media size units and the koeficient which depend on value of USE_KIBIBYTES variable.
+declare -a UNITS
+KOEF=
 
 # Device properties
 REMOVABLE=
 EXTERNAL=
 EJECTABLE=
+READONLY=
 VENDOR=
 MODEL=
 SIZE=
@@ -94,59 +130,28 @@ main()
 {
 	local separator_flag=
 	local menu_item_flag
-	local eject
 	local i
 	local j
 	local mj
-
-#ICON="/usr/share/icons/gnome/24x24/devices/media-removable.png"
+	local mdevice
 
 	echo "<openbox_pipe_menu>"
 
 	for i in /sys/block/*/device
 	do
 		i=${i%/device}
-		i=${i#/sys/block/}
-		read REMOVABLE < /sys/block/$i/removable
+		mdevice=${i##*/}
 		get_device_info $i
-
-		if [ -z "$BUS" ] && [ -r "/sys/block/$i/device/cid" ] && [ -r "/sys/block/$i/device/csd" ]
-		then
-			BUS=sdio
-			TYPE=flash
-			MODEL=$NAME
-			if [ -r "/sys/block/$i/device/scr" ]
-			then
-				VENDOR="SD Card"
-			else
-				VENDOR="MMC Card"
-			fi
-		fi
-
-		EXTERNAL=0
-		# External device is any one on usb, esata, ieee1394 (firewire) or sdio bus.
-		# Did not test this except usb bus...
-		# ata_serial_esata must be incorrect value, seems ata is used instead.
-		([ "$BUS" == "usb" ] || [ "$BUS" == "ata_serial_esata" ] || [ "$BUS" == "ieee1394" ] ||\
-			[ "$BUS" == "sdio" ]) && EXTERNAL=1
 
 		if [ "$REMOVABLE" != "0" ] || [ "$EXTERNAL" != "0" ]
 		then
-			IFS=$'\n' read eject < /sys/block/$i/events
-			EJECTABLE=
-			[[ $eject =~ eject ]] && EJECTABLE=1
-
-			read VENDOR < /sys/block/$i/device/vendor
-			read MODEL < /sys/block/$i/device/model
-			VENDOR=${VENDOR%%+([[:space:]])}
-			MODEL=${MODEL%%+([[:space:]])}
-
 			[ -z "$separator_flag" ] && separator_flag=1
 
-			get_size /sys/block/$i
+			get_size $i
 
 			LABEL="$VENDOR $MODEL"
 			[ "$TYPE" == "disk" ] && [[ ! $LABEL =~ $SIZE ]] && LABEL="$LABEL $SIZE"
+			sanitize_label
 			echo "<separator label=\"$LABEL\"/>"
 
 			get_device_icon
@@ -154,26 +159,25 @@ main()
 			menu_item_flag=
 			if [ -n "$FS_USAGE" ]
 			then
-				fs_menu_item $i && menu_item_flag=1
+				fs_menu_item $mdevice && menu_item_flag=1
 			elif [ -n "$PART_TABLE_TYPE" ]
 			then
-				for j in /sys/block/$i/*/partition
+				for j in $i/*/partition
 				do
 					mj=${j%/partition}
 					get_size $mj
-					mj=${mj##*/}
 					get_device_info $mj
-					fs_menu_item $mj && menu_item_flag=1
+					fs_menu_item ${mj##*/} && menu_item_flag=1
 				done
 			elif [ -z "$MEDIA" ]
 			then
-				LABEL="$i No media"
+				LABEL="$mdevice No media"
 				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
 				echo "	<action name=\"Execute\"><command>true</command></action>"
 				echo "</item>"
 				menu_item_flag=1
 			else
-				LABEL="$i Media is $MEDIA_STATE"
+				LABEL="$mdevice Media is $MEDIA_STATE"
 				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
 				echo "	<action name=\"Execute\"><command>true</command></action>"
 				echo "</item>"
@@ -181,15 +185,15 @@ main()
 			fi
 			if [ -z "$menu_item_flag" ]
 			then
-				LABEL="$i No supported filesystems"
+				LABEL="$mdevice No supported filesystems"
 				echo "<item label=\"$LABEL\" icon=\"$ICON\" >"
 				echo "	<action name=\"Execute\"><command>true</command></action>"
 				echo "</item>"
 			fi
-			if [ -n "$EJECTABLE" ] && check_command ${COMMAND_EJECT}
+			if [ "$EJECTABLE" != "0" ] && check_command ${COMMAND_EJECT}
 			then
 				LABEL="Eject"
-				form_command $COMMAND_EJECT "/dev/$i"	# Only device name is passed
+				form_command $COMMAND_EJECT "/dev/$mdevice"	# Only device name is passed
 				echo "<item label=\"$LABEL\" icon=\"$ICON_EJECT\" >"
 				echo "	<action name=\"Execute\"><command>$ACTION</command></action>"
 				echo "</item>"
@@ -222,7 +226,7 @@ get_size()
 	local reminder
 	local gsi
 
-	read size < $1/size
+	[ -r "$1/size" ] && read size < $1/size
 	[[ ! "$size" =~ [[:digit:]] ]] && size=0
 	size=$(( $size * 512 ))
 	for(( gsi=0; gsi<${#UNITS[*]}; gsi++ ))
@@ -243,25 +247,48 @@ get_size()
 }
 
 # =========================================================================================================
-# get_device_info receives one mandatory argument - device file name.
+# get_device_info receives one mandatory argument - path to the device directory in sysfs.
 # It fills global variables with values from udev database.
 # =========================================================================================================
 get_device_info()
 {
 	local gdkey
 	local gdvalue
+	local gddevice=${1##*/}
+	local eject
 
-	BUS=
-	TYPE=
-	NAME=
-	PART_TABLE_TYPE=
-	MEDIA=
-	MEDIA_STATE=
 	FS_USAGE=
 	FS_TYPE=
 	FS_VERSION=
 	FS_LABEL=
 	FS_UUID=
+
+	if [ -d "$1/device" ]	# Reset variables for host device and keep parent's values for partitions
+	then
+		BUS=
+		TYPE=
+		NAME=
+		PART_TABLE_TYPE=
+		MEDIA=
+		MEDIA_STATE=
+
+		REMOVABLE=0
+		[ -r "$1/removable" ] && read REMOVABLE < $1/removable
+
+		[ -r "$1/events" ] && IFS=$'\n' read eject < $1/events
+		EJECTABLE=0
+		[[ $eject =~ eject ]] && EJECTABLE=1
+
+		VENDOR=
+		[ -r "$1/device/vendor" ] && read VENDOR < $1/device/vendor
+		MODEL=
+		[ -r "$1/device/model" ] && read MODEL < $1/device/model
+		VENDOR=${VENDOR%%+([[:space:]])}
+		MODEL=${MODEL%%+([[:space:]])}
+	fi
+
+	READONLY=0
+	[ -r "$1/ro" ] && read READONLY < $1/ro
 
 	while IFS=$'=' read -r gdkey gdvalue
 	do
@@ -301,9 +328,30 @@ get_device_info()
 				FS_UUID=$(echo -en $gdvalue)
 				;;
 		esac
-	done < <(udevadm info --query=property --name=$1)
+	done < <(udevadm info --query=property --name=$gddevice)
 
 	[ -n "$PART_TABLE_TYPE" ] && MEDIA=1
+
+	if [ -z "$BUS" ] && [ -r "$1/device/cid" ] && [ -r "$1/device/csd" ]
+	then
+		BUS=sdio
+		TYPE=flash
+		MODEL=$NAME
+		if [ -r "$1/device/scr" ]
+		then
+			VENDOR="SD Card"
+		else
+			VENDOR="MMC Card"
+		fi
+	fi
+
+	EXTERNAL=0
+	# External device is any one on usb, esata, ieee1394 (firewire) or sdio bus.
+	# Did not test this except usb bus...
+	# ata_serial_esata must be incorrect value, seems ata is used instead.
+	([ "$BUS" == "usb" ] || [ "$BUS" == "ata_serial_esata" ] || [ "$BUS" == "ieee1394" ] ||\
+		[ "$BUS" == "sdio" ]) && EXTERNAL=1
+
 }
 
 # =========================================================================================================
@@ -317,6 +365,7 @@ fs_menu_item()
 	local mount_to=
 	local mount_in_use=
 	local mount_paths=
+	local mount_options
 	local mipath
 	local mii
 	local mij
@@ -325,6 +374,7 @@ fs_menu_item()
 	if [ "$FS_USAGE" == "filesystem" ]
 	then
 		LABEL="$1 $SIZE $FS_LABEL"
+		sanitize_label
 		echo "<menu id=\"$1\" label=\"$LABEL\" icon=\"$ICON\">"
 		echo "<separator label=\"$LABEL\"/>"
 
@@ -335,6 +385,7 @@ fs_menu_item()
 			then
 				already_mounted+="${MOUNTS[((mii+1))]}:"
 				LABEL="unmount from ${MOUNTS[((mii+1))]}"
+				sanitize_label
 				form_command $COMMAND_UMOUNT "/dev/$1" "${MOUNTS[((mii+1))]}" $FS_TYPE # mount options not passed
 				echo "	<item label=\"$LABEL\" icon=\"$ICON_UMOUNT\" >"
 				echo "		<action name=\"Execute\"><command>$ACTION</command></action>"
@@ -425,7 +476,10 @@ fs_menu_item()
 
 			[ -n "$miflag" ] && miflag= && echo "<separator />"
 			LABEL="mount at $mii"
-			form_command $COMMAND_MOUNT "/dev/$1" "$mii" $FS_TYPE $DEFAULT_MOUNT_OPTIONS
+			sanitize_label
+			mount_options=$DEFAULT_MOUNT_OPTIONS
+			[ "$READONLY" != "0" ] && mount_options+=",ro"
+			form_command $COMMAND_MOUNT "/dev/$1" "$mii" $FS_TYPE $mount_options
 			echo "	<item label=\"$LABEL\" icon=\"$ICON_MOUNT\" >"
 			echo "		<action name=\"Execute\"><command>$ACTION</command></action>"
 			echo "	</item>"
@@ -448,17 +502,17 @@ check_command()
 {
 	local cmd
 
-	type $1 2>/dev/null && return 0					# check for command file itself
+	type $1 &>/dev/null && return 0					# check for command file itself
 
-	type ${1%%[[:space:]]*} 2>/dev/null && return 0	# check for command file with arguments
+	type ${1%%[[:space:]]*} &>/dev/null && return 0	# check for command file with arguments
 
 	cmd=${1#*([[:space:]])\"}
 	cmd=${cmd%%\"*}
-	type ${cmd} 2>/dev/null && return 0				# check for quoted command file
+	type ${cmd} &>/dev/null && return 0				# check for quoted command file
 
 	cmd=${1#*([[:space:]])\'}
 	cmd=${cmd%%\'*}
-	type ${cmd} 2>/dev/null && return 0				# check for strong-quoted command file
+	type ${cmd} &>/dev/null && return 0				# check for strong-quoted command file
 
 	return 1
 }
@@ -474,16 +528,16 @@ load_tables()
 	local ltrest
 	local lti
 
-	while IFS=$' \t' read ltdev ltpath ltrest
+	while IFS=$' \t' read -r ltdev ltpath ltrest
 	do
 		if [ ${ltdev:0:5} == "/dev/" ]
 		then
 			MOUNTS[((MOUNTS_INDEX++))]=${ltdev:5}
-			MOUNTS[((MOUNTS_INDEX++))]=$ltpath
+			MOUNTS[((MOUNTS_INDEX++))]=$(echo -en $ltpath)
 		fi
 	done < "/proc/mounts"
 
-	while IFS=$' \t' read ltdev ltpath ltrest
+	while IFS=$' \t' read -r ltdev ltpath ltrest
 	do
 		case $ltdev in
 		/dev/*)
@@ -559,10 +613,14 @@ is_mount_point_in_use()
 # =========================================================================================================
 form_command()
 {
+	local path=${3//'"'/$'\\\"'}
+
 	ACTION=${1//"%d"/"$2"}
-	ACTION=${ACTION//"%p"/"$3"}
+	ACTION=${ACTION//"%p"/"\"$path\""}
 	ACTION=${ACTION//"%t"/"$4"}
 	ACTION=${ACTION//"%o"/"$5"}
+
+	sanitize_action
 }
 
 # =========================================================================================================
@@ -600,6 +658,50 @@ get_device_icon()
 		find_devices_icon "drive-removable-media" ||\
 		find_devices_icon "media-removable"
 	fi
+
+	sanitize_icon
+}
+
+# =========================================================================================================
+# sanitize_label receives no mandatory arguments.
+# It sanitizes LABEL variable for Openbox replacing special symbols with their respective HTML tags
+# and returns no value.
+# =========================================================================================================
+sanitize_label()
+{
+
+ LABEL=${LABEL//'&'/"&amp;"}
+ LABEL=${LABEL//'"'/"&quot;"}
+ LABEL=${LABEL//'<'/"&lt;"}
+ LABEL=${LABEL//'>'/"&gt;"}
+
+ LABEL=${LABEL//'_'/"__"}	# escape '_' with double '_' for Openbox to process it correctly
+}
+
+# =========================================================================================================
+# sanitize_action receives no mandatory arguments.
+# It sanitizes ACTION variable for Openbox replacing special symbols with their respective HTML tags
+# and returns no value.
+# =========================================================================================================
+sanitize_action()
+{
+ ACTION=${ACTION//'&'/"&amp;"}
+ ACTION=${ACTION//'"'/"&quot;"}
+ ACTION=${ACTION//'<'/"&lt;"}
+ ACTION=${ACTION//'>'/"&gt;"}
+}
+
+# =========================================================================================================
+# sanitize_icon receives no mandatory arguments.
+# It sanitizes ICON variable for Openbox replacing special symbols with their respective HTML tags
+# and returns no value.
+# =========================================================================================================
+sanitize_icon()
+{
+ ICON=${ICON//'&'/"&amp;"}
+ ICON=${ICON//'"'/"&quot;"}
+ ICON=${ICON//'<'/"&lt;"}
+ ICON=${ICON//'>'/"&gt;"}
 }
 
 #--------------------------------------------------------------------------------------------------------------
@@ -608,14 +710,33 @@ get_device_icon()
 
 shopt -qs nullglob
 
-. "${0%/*}/icon-functions"
+# Source xdg-bash-functions
+. "${0%/*}/xdg-bash-functions/icon-functions"
 
-icon_functions_init false
+# Source config file before icon_functions_init call
+[ -r "${0%/*}/ob-rm-menu.conf" ] && . "${0%/*}/ob-rm-menu.conf"
+[ -r "$XDG_CONFIG_HOME/ob-rm-menu.conf" ] && . "$XDG_CONFIG_HOME/ob-rm-menu.conf"
+
+DROP_CACHE="true"
+[ "${0%/*}/ob-rm-menu.conf" -ot "$ICONCACHEFILE" ] &&\
+	[ "$XDG_CONFIG_HOME/ob-rm-menu.conf" -ot "$ICONCACHEFILE" ] &&\
+		DROP_CACHE="false"
+
+icon_functions_init $DROP_CACHE
 
 find_actions_icon "go-jump"		&& ICON_SYNC=$ICON
 find_actions_icon "media-eject"	&& ICON_EJECT=$ICON
 find_actions_icon "list-add"	&& ICON_MOUNT=$ICON
 find_actions_icon "list-remove"	&& ICON_UMOUNT=$ICON
+
+if [ "$USE_KIBIBYTES" == "true" ]
+then
+	UNITS=( KiB MiB GiB TiB PiB EiB ZiB YiB )
+	KOEF=1024
+else
+	UNITS=( KB MB GB TB PB EB ZB YB )
+	KOEF=1000
+fi
 
 load_tables
 main
