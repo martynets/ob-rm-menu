@@ -1,0 +1,118 @@
+Copyright (C) 2014, 2016 Andriy Martynets <martynets@volia.ua>
+See the end of the file for license conditions.
+-------------------------------------------------------------------------------
+
+The ob-rm-menu is Openbox pipe menu removable medias manager. It shows
+currently present removable medias and their partitions with mount/unmount
+actions presented as submenus.
+
+By default the script uses udevil for mount/unmount operations to avoid *kits
+dependent packages. But this is customizable and can be replaced with a tool
+of choice.
+
+This project is on early development stage and has a lot of items in TODO list.
+Current version presents basic functionality but the author believes it can
+serve for most cases.
+
+Software Requirements
+---------------------
+
+The ob-rm-menu script depends on the following software packages:
+- the bash version 4.0+
+- kernel 2.6+ (sysfs mounted at /sys)
+- udev (udevadm tool)
+- udevil (mount/unmount operations - customizable)
+- eject (eject CDs operations - customizable)
+- coreutils (sync tool - customizable)
+- xdg-bash-functions package (https://github.com/martynets/xdg-bash-functions)
+
+The last one package must be manually installed from the repository somewhere in
+your PATH. Please see its README file for additional information.
+
+Downloading
+-----------
+
+Current version of ob-rm-menu can be downloaded from the link below:
+
+  https://github.com/martynets/ob-rm-menu/archive/master.zip
+
+The latest released version can be checked here:
+
+  https://github.com/martynets/ob-rm-menu/releases/latest
+
+The ob-rm-menu package is also available via Git access from the GitHub
+server:
+
+  https://github.com/martynets/ob-rm-menu.git
+
+Installation
+------------
+
+This script is the Openbox pipe menu and needs to be installed as per the
+Openbox requirements. It can be copied to any convenient location and reference
+to it must be added to Openbox menu file which name and location default to
+$HOME/.config/openbox/menu.xml. Something similar to the following must be
+added:
+
+    <menu id="ob-rm-menu" label="Removable Medias"
+        execute="/path/to/script/ob-rm-menu"
+            icon="/path/to/icontheme/devices/16/media-removable.svg"/>
+
+More information on Openbox menu configuration can be found on its wiki page:
+
+  http://openbox.org/wiki/Help:Menus
+
+Configuration
+-------------
+
+The ob-rm-menu script can be configured via configuration file named
+ob-rm-menu.conf. It is searched in directories listed in the
+XDG_CONFIG_DIRS variable first for system wide settings. Next it is searched
+in the path from XDG_CONFIG_HOME variable and is considered as the
+user specific settings. The latter overrides settings of the former.
+
+The files are sourced by the script and thus must conform to the bash shell
+syntax.
+
+The files consist mostly of the xdg-bash-functions' (icon-functions)
+customizable variables and define some XDG defaults and preferences. For
+more information see comments inside the sample configuration file and
+appropriate freedesktop.org specifications.
+
+There are some settings (variables) there specific to the script. They are
+self describing and commented in the samle configuration file. As the script
+is being developed the customizable variables are subject to change and will
+be documented with released version.
+
+Bug Reporting
+-------------
+
+You can send ob-rm-menu bug reports and/or any compatibility issues
+directly to the author <martynets@volia.ua>.
+
+You can also use the online bug tracking system in the GitHub ob-rm-menu
+project to submit new problem reports or search for existing ones:
+
+  https://github.com/martynets/ob-rm-menu/issues
+
+Change Log
+----------
+
+0.1-alpha    Internal development, non-released version
+
+-------------------------------------------------------------------------------
+Copyright (C) 2014, 2016 Andriy Martynets <martynets@volia.ua>
+This file is part of ob-rm-menu.
+
+ob-rm-menu is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation; either version 3 of the License, or (at your option) any
+later version.
+
+ob-rm-menu is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along with
+ob-rm-menu.  If not, see <http://www.gnu.org/licenses/>.

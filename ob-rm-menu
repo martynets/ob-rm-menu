@@ -3,7 +3,7 @@
 #
 # Openbox pipe menu removable medias manager version 0.1-alpha
 #
-# Copyright (C) 2015 Andriy Martynets <martynets@volia.ua>
+# Copyright (C) 2015, 2016 Andriy Martynets <martynets@volia.ua>
 #--------------------------------------------------------------------------------------------------------------
 # This file is part of ob-rm-menu.
 #
@@ -23,7 +23,7 @@
 # This script depends on the following packages:
 #	kernel 2.6+ (sysfs mounted at /sys)
 #	udev	(udevadm tool)
-#	udevil	(customizable, can be replaced by any tool)
+#	udevil	(customizable, can be replaced with a tool of choice)
 #
 # By default it uses udevil to avoid *kits dependent packages.
 #
@@ -711,16 +711,24 @@ sanitize_icon()
 shopt -qs nullglob
 
 # Source xdg-bash-functions
-. "${0%/*}/xdg-bash-functions/icon-functions"
+. icon-functions
 
 # Source config file before icon_functions_init call
-[ -r "${0%/*}/ob-rm-menu.conf" ] && . "${0%/*}/ob-rm-menu.conf"
-[ -r "$XDG_CONFIG_HOME/ob-rm-menu.conf" ] && . "$XDG_CONFIG_HOME/ob-rm-menu.conf"
-
-DROP_CACHE="true"
-[ "${0%/*}/ob-rm-menu.conf" -ot "$ICONCACHEFILE" ] &&\
-	[ "$XDG_CONFIG_HOME/ob-rm-menu.conf" -ot "$ICONCACHEFILE" ] &&\
-		DROP_CACHE="false"
+DROP_CACHE="false"
+IFS=$':'
+for idir in $XDG_CONFIG_DIRS
+do
+	if [ -r "$idir/ob-rm-menu.conf.conf" ]
+	then
+		. "$idir/ob-rm-menu.conf"
+		[ "$idir/ob-rm-menu.conf" -nt "$ICONCACHEFILE" ] && DROP_CACHE="true"
+	fi
+done
+if [ -r "$XDG_CONFIG_HOME/ob-rm-menu.conf" ]
+then
+	. "$XDG_CONFIG_HOME/ob-rm-menu.conf"
+	[ "$XDG_CONFIG_HOME/ob-rm-menu.conf" -nt "$ICONCACHEFILE" ] && DROP_CACHE="true"
+fi
 
 icon_functions_init $DROP_CACHE
 
